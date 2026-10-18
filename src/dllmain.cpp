@@ -39,6 +39,7 @@ static_assert(sizeof(void*) == 4, "x86 only");
 #define FN_CREATE_TEXT         0x7B35D0
 #define FN_CREATE_BUTTON       0x7B38A0
 #define FN_SET_MINI_POS        0x761274 // bool MapNode::setMiniPos(float x, float y)
+#define FN_SET_ACTIVE_OBJECT   0x7ADAF0 // bool HudBuilder::setActiveObject(string parent, string name)
 #define FN_HUD_CAMERA_SETUP    0x7C94B0 // sets up the 800x600 HUD ortho camera
 
 #define IMM_HUD_WIDTH          0x7C94E9 // push 800.0f  -> HUD camera width
@@ -63,6 +64,7 @@ static const SiteCheck g_sites[] = {
     { IMM_MOUSE_AREA_WIDTH,  { 0x00, 0x00, 0x48, 0x44, 0xC7 } },
     { IMM_MOUSE_AREA_OFFSET, { 0x00, 0x00, 0xC8, 0xC3, 0xC7 } },
     { JMP_CROSSHAIR,         { 0x7E, 0x3A, 0xE8, 0x48, 0xAE } },
+    { FN_SET_ACTIVE_OBJECT,  { 0x55, 0x8B, 0xEC, 0x83, 0xEC } },
 };
 
 // ---------------------------------------------------------------------------
@@ -239,6 +241,7 @@ std::string parentFor(const std::string& node, const char* parent) {
 
 typedef bool(__thiscall* CreateRectNode_t)(void*, game::string, game::string, int, int, int, int);
 typedef bool(__thiscall* CreateSplitNode_t)(void*, game::string, game::string);
+typedef bool(__thiscall* SetActiveObject_t)(void*, game::string, game::string);
 typedef bool(__thiscall* SetMiniPos_t)(void*, float, float);
 typedef void(__thiscall* HudCameraSetup_t)(void*);
 typedef void(__thiscall* SetFov_t)(void*, float);
@@ -253,20 +256,26 @@ bool createTransform(void* builder, const game::string& parent, const game::stri
     std::string par = parentFor(name, parent.c_str());
     CreateRectNode_t orig = (CreateRectNode_t)FN_CREATE_TRANSFORM;
 
-    auto clones = g_nodesClone.find(name);
-    if (clones != g_nodesClone.end()) {
-        for (const std::string& clone : clones->second) {
-            int cx = x, cy = y, cw = w, ch = h;
-            adjustNode(clone, cx, cy, cw, ch);
-            log("Creating TransformNode %s %s %d %d %d %d (clone of %s)", par.c_str(), clone.c_str(), cx, cy, cw, ch, name.c_str());
-            orig(builder, game::string(par.c_str()), game::string(clone.c_str()), cx, cy, cw, ch);
-        }
-    }
-
     int ox = x, oy = y, ow = w, oh = h;
     adjustNode(name, x, y, w, h);
     logAdjusted("TransformNode", name, x, y, w, h, ox, oy, ow, oh);
-    return orig(builder, game::string(par.c_str()), node, x, y, w, h);
+    bool res = orig(builder, game::string(par.c_str()), node, x, y, w, h);
+
+    // clones come after the original so they can be parented to it (inheriting
+    // its show variables); then the original is made the active object again,
+    // because the script's following setNode* lines are meant for it
+    auto clones = g_nodesClone.find(name);
+    if (clones != g_nodesClone.end()) {
+        for (const std::string& clone : clones->second) {
+            int cx = ox, cy = oy, cw = ow, ch = oh;
+            adjustNode(clone, cx, cy, cw, ch);
+            std::string cpar = parentFor(clone, par.c_str());
+            log("Creating TransformNode %s %s %d %d %d %d (clone of %s)", cpar.c_str(), clone.c_str(), cx, cy, cw, ch, name.c_str());
+            orig(builder, game::string(cpar.c_str()), game::string(clone.c_str()), cx, cy, cw, ch);
+        }
+        ((SetActiveObject_t)FN_SET_ACTIVE_OBJECT)(builder, game::string(par.c_str()), node);
+    }
+    return res;
 }
 
 bool __fastcall CreateTransformNode_hook(void* builder, int, game::string parent, game::string node, int x, int y, int w, int h) {
